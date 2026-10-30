@@ -58,12 +58,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
         run: |
-          python -m cloudflare_dns_update sync \
-            ${{ inputs.dry_run && '--dry-run' || '' }} \
-            ${{ inputs.force && '--force' || '' }} \
+          python -m cloudflare_dns_update \
             --log-level ${{ inputs.log_level || 'INFO' }} \
             --report-path sync-report.json \
-            --domains-path sync-domains.txt
+            --domains-path sync-domains.txt \
+            sync \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            ${{ inputs.force && '--force' || '' }}
 
       - name: Export run result
         id: export
