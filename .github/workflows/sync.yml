@@ -1,0 +1,111 @@
+name: Sync Cloudflare DNS lists
+
+on:
+  schedule:
+    # 默认每天 UTC 03:17 同步（避开整点高峰）。调整频率改这一行即可：
+    #   https://pubs.opengroup.org/onlinepubs/9699919799/utilities/crontab.html
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "试运行（不写入 Cloudflare）"
+        type: boolean
+        default: false
+      force:
+        description: "忽略删除比例护栏"
+        type: boolean
+        default: false
+      log_level:
+        description: "日志级别"
+        type: choice
+        options: [DEBUG, INFO, WARNING, ERROR]
+        default: INFO
+
+# 最小权限：读代码 + 写 Issue（仅用于失败告警）
+permissions:
+  contents: read
+  issues: write
+
+# 防止手动触发与定时任务并发写入 Gateway
+concurrency:
+  group: cloudflare-dns-update
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      status: ${{ steps.export.outputs.status }}
+      failure_reason: ${{ steps.export.outputs.failure_reason }}
+      domains_total: ${{ steps.export.outputs.domains_total }}
+      domains_added: ${{ steps.export.outputs.domains_added }}
+      domains_removed: ${{ steps.export.outputs.domains_removed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e .
+
+      - name: Sync
+        env:
+          # 凭据只经 env 注入，绝不出现在命令行参数里
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
+        run: |
+          python -m cloudflare_dns_update sync \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            ${{ inputs.force && '--force' || '' }} \
+            --log-level ${{ inputs.log_level || 'INFO' }} \
+            --report-path sync-report.json \
+            --domains-path sync-domains.txt
+
+      - name: Export run result
+        id: export
+        if: always()
+        env:
+          GITHUB_STEP_SUMMARY: ${{ github.step_summary_path }}
+        run: python .github/scripts/export_summary.py
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-sync-report
+          path: |
+            sync-report.json
+            sync-domains.txt
+          retention-days: 90
+
+  notify:
+    needs: sync
+    if: failure() || needs.sync.outputs.status == 'aborted'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const reason = `${{ needs.sync.outputs.failure_reason }}` || 'unknown';
+            const title = '[Automation] Cloudflare DNS list sync failed';
+            const body = `## Gateway DNS list sync failed\n\n**Reason:** ${reason}\n\n**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: ['gateway-sync-failure']
+            });
+            const existing = issues.data.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['gateway-sync-failure']
+              });
+            }

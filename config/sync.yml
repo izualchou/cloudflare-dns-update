@@ -1,0 +1,59 @@
+# cloudflare-dns-update 配置
+# 顶层三段：settings（全局运行参数）、whitelist（全局白名单）、targets（一个或多个目标组）
+
+settings:
+  # 网络与重试
+  timeout: 30                  # 单次 HTTP 请求超时（秒）
+  max_retries: 3               # 失败最大重试次数（5xx / 429 / 网络异常）
+  backoff_base: 1.5            # 指数退避基数：间隔 = base ** attempt（上限 30s）
+  max_concurrency: 5           # 写入 Cloudflare 时的最大并发数
+  user_agent: "cloudflare-dns-update/1.0"
+
+  # 分片与命名
+  chunk_size: 1000             # 单个 Gateway 列表最多容纳的域名数
+  list_type: DOMAIN
+  list_description: "Managed domain list"
+
+  # 护栏（任意一项触发即中止，避免误清空线上策略）
+  min_domains_per_source: 100  # 单源解析低于此值 → 告警（不中止）
+  fail_safe_min_domains: 1000  # 最终域名数低于此值 → 中止
+  max_domains: 400000          # 最终域名数超过此值 → 中止
+  max_removal_ratio: 0.5       # 相对云端基线删除比例超过此值 → 中止（可用 --force 覆盖）
+  fail_on_source_error: false  # true 时任一源失败即中止
+
+# 全局白名单：对所有 target 生效（精确匹配 + 父域匹配）
+whitelist:
+  enabled: true
+  sources: []                  # 远程白名单源，字段同 targets[].sources
+  inline:
+    - example.com
+    - partner.cdn.net
+
+# 一个或多个目标组；每组独立管理一组列表与一个可选策略
+targets:
+  - name: adblock
+    list_prefix: adblock-list       # 实际列表名形如 adblock-list-1
+    policy_name: Block Ads          # 留空则不管理策略
+    sources:
+      - name: stevenblack
+        url: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+        format: hosts               # hosts / domains / adblock / auto
+        enabled: true
+      - name: oisd-small
+        url: https://hosts.core.oisd.nl/light.txt
+        format: domains
+      - name: adguard-dns
+        url: https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
+        format: adblock
+    whitelist:
+      enabled: true
+      inline:
+        - telemetry.example.com
+
+  - name: security-block
+    list_prefix: sec-block
+    policy_name: Block Threat Intel
+    sources:
+      - name: threatfeed
+        url: https://example.invalid/threat-domains.txt
+        format: domains
