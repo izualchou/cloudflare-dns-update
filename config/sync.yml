@@ -45,6 +45,10 @@ targets:
       - name: adguard-dns
         url: https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
         format: adblock
+      - name: anti-ad
+        url: https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-easylist.txt
+        format: adblock
+        enabled: true
     whitelist:
       enabled: true
       inline:
